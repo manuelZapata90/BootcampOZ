@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity 0.8.15;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+
+
+/**
+ * @title SampleERC20
+ * @dev Create a sample ERC20 standard token
+ */
+
+library ArrayExtends {
+   function removeIndex(bytes32[] storage self, uint index) public returns (bool) {
+        self[index]=self[self.length-1];
+        self.pop();
+      return true;
+   }
+   function indexOf(bytes32[] storage self, bytes32 value) public view returns (uint,bool) {
+      for (uint i = 0; i < self.length; i++)if (self[i] == value) return (i,true);
+      return (uint(0),false);
+   }
+}
+
+
+contract PagareBlockdemy is ERC20,AccessControl  {
+    using ArrayExtends for bytes32[];
+    uint8 public TasaGeneral = 10;
+    address public Bank;
+    bytes32 public constant ADMIN = keccak256("ADMIN");
+    bytes32 public constant TESORERO = keccak256("TESORERO");
+    struct Pagare{
+        uint FechaPago;
+        uint8 TasaCreacion;
+        uint Monto;
+    }
+
+    mapping(address => bytes32[]) private TenedoresPagare;
+    mapping(bytes32 => Pagare) public Pagares;
+
+    
+    event PagareCreado(address indexed propietario,  bytes32 hashPagare, uint FechaPago, uint256 Monto);    
+    event PagareTransferido(address indexed propietario, address indexed nuevoPropietario,  bytes32 hashPagare);
+    event PagareCobrado(address indexed propietario, bytes32 hashPagare);
+    event TasaActualizada(uint256 nuevaTasa);
+
+    constructor() ERC20("Pagare BootCamp OZ", "PB") {
+        _grantRole(DEFAULT_ADMIN_ROLE , msg.sender);
+        _grantRole(ADMIN , msg.sender);
+        Bank = msg.sender;
+    }
+
+    function Pruebas()public returns(bool){
+        _mint(msg.sender,10000000000000000000);
+        _mint(0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2,10000000000000000000);
+        _approve(0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2,msg.sender,5000000000000000000);
+        agregarPagare(0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2,1,1000000000000000000);
+        agregarPagare(0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2,90,1000000000000000000);
+        return true;
+    }
+
+    function FijarTasa(uint8 _porcentajeTasa)public onlyRole(TESORERO) returns(bool){
+        require(_porcentajeTasa > 0,"La tasa tiene que ser mayor a cero");
+        TasaGeneral = _porcentajeTasa;
+        emit TasaActualizada (TasaGeneral);
+        return true;
+    }
+
+    function crearPagareID(address _duenio, uint _fechaPago, uint8 _tasa,uint _monto)private view returns(bytes32 IDPagare){
+        IDPagare = keccak256(abi.encode(block.chainid,_duenio,_fechaPago,_tasa,_monto));
+    }
+    
+    function agregarPagare(address _duenio, uint _plazo,uint _monto)public onlyRole(ADMIN) returns(bytes32 hashPagare){
+        require(_duenio!= address(0),"Direccion cero no puede poseer un pagare");
+        require(_plazo>0,"El plazo tiene que ser mayor a cero");
+        require(_monto>0,"El monto tiene que ser mayor a cero");
+        //uint _plazo = _plazoDias * 1 days;
+        _spendAllowance( _duenio, msg.sender,_monto);
+        _transfer( _duenio, msg.sender,_monto);
+        uint _montoFuturo = calcularValorFuturo(_monto,_plazo);
+        uint _fechaPago = block.timestamp + (_plazo * 1 days);
+        hashPagare = crearPagareID(_duenio,_fechaPago,TasaGeneral,_montoFuturo);
+        TenedoresPagare[_duenio].push(hashPagare);
+        Pagares[hashPagare]=Pagare(_fechaPago,TasaGeneral,_montoFuturo);  
+        emit PagareCreado(_duenio,hashPagare,_fechaPago,_montoFuturo);   
+    }
+
+    function TransferirPagare(bytes32 _clavePagare,address _nuevoDueno)public poseePagare(_clavePagare){  
+        require(_nuevoDueno!= address(0),"Direccion cero no puede poseer un pagare");      
+        (uint index,) = TenedoresPagare[msg.sender].indexOf(_clavePagare);
+        TenedoresPagare[msg.sender].removeIndex(index) ;
+        TenedoresPagare[_nuevoDueno].push(_clavePagare);
+        emit PagareTransferido(msg.sender,_nuevoDueno,_clavePagare);
+    }
+
+    modifier poseePagare(bytes32 hashPagare) {        
+        (,bool tienePagare)=TenedoresPagare[msg.sender].indexOf(hashPagare);
+        require(tienePagare,"No posee el pagare");
+        _;
+    }
+    function calcularValorFuturo(uint _monto,uint _plazo)public view returns(uint retorno){
+        retorno=(_monto * (36000+_plazo*TasaGeneral))/36000;
+    }
+
+    function saldoPagare(bytes32 hashPagare)public view returns(uint saldo){        
+        if(block.timestamp>Pagares[hashPagare].FechaPago)
+            saldo = Pagares[hashPagare].Monto;
+        else{
+            saldo = (Pagares[hashPagare].Monto * 36000 * 1 days)/(36000 * 1 days + (Pagares[hashPagare].FechaPago-block.timestamp)*TasaGeneral);   
+        }      
+    }
+
+    function cobrarPagare(bytes32 hashPagare)public poseePagare(hashPagare) returns(bytes32){              
+        (uint index,) = TenedoresPagare[msg.sender].indexOf(hashPagare);
+        TenedoresPagare[msg.sender].removeIndex(index) ;
+        _transfer(Bank,msg.sender,saldoPagare(hashPagare));
+        delete Pagares[hashPagare];
+        emit PagareCobrado(msg.sender,hashPagare);
+        return TenedoresPagare[msg.sender][index];
+    }
+
+    function mint(uint _monto)public onlyRole(ADMIN) {
+        _mint(msg.sender,_monto);
+    }
+    function obtenerPagares()public view returns( bytes32[] memory){
+        return TenedoresPagare[msg.sender];
+    }
+}
